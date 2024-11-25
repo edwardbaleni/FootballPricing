@@ -1,0 +1,497 @@
+---
+title: "MVA Assignment"
+author: "Edward Baleni, BLNEDW003, Thabo Dube, DBXTHA030"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    fig_caption: yes
+    extra_dependencies:
+    - float
+    - subfig
+    keep_md: yes
+  html_document:
+    df_print: paged
+header-includes: \usepackage{amsmath}
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, fig.align="center", out.width = "65%", fig.pos = "H")
+```
+
+# Introduction
+
+```{r Packages, include=FALSE}
+set.seed(16)
+require(Rtsne)
+require(scatterplot3d)
+require(kernlab)
+require(biclust)
+require(cluster)
+require(corrplot)
+require(isa2)
+require(sparsepca)
+require(xtable)
+require(ggfortify)
+require(rrcov)
+require(ordr)
+require(ggplot2)
+require(viridis)
+require(reshape2)
+require(factoextra)
+require(SCGLR)
+```
+
+
+```{r Data}
+# Load in data
+load("FinData.RData")
+# Change row names
+rownames(FinData) <- FinData$Name
+# Get X matrix that does not include potential response variables and categorical variables
+X <- FinData
+rownames(X) <- X$Name
+X <- scale(X[,c(-1,-5, -6, -7, -8,-3,-4, -35, -34, -36, -37)])
+
+# Look for outliers
+par(mar = c(8, 4, 0.5, 2))
+boxplot(X, las = 2)
+
+# Define colour scheme
+colors <- c("#900000", "#E79300", "#59A6F7") # DF, FW, MF
+colors <- colors[FinData$Position]
+```
+
+# Exploratory Data Analysis
+
+
+
+# Methodology
+```{r Correlations}
+# Quickly check correlations as this may inform our thinking on principle components
+co <- cor(X)
+corrplot((co),method = 'square', order = 'FPC', type = 'lower', diag = FALSE)
+
+# Now we see how much of the data is correlated and how much of it is not
+co[upper.tri(co)] <- NA 
+co <- co - diag(nrow(co))
+# How many are correlated strongly
+(pres <- sum(abs(co) > 0.5, na.rm = T))#/(ncol(combn(26, 2))))
+# How many correlations were checked
+ncol(combn(26, 2))
+
+# The code above shows us that out of the 325 correlations not including correlation with itself that only 54 correlations are present in our dataset. This may indicate the possibility that the PCA may not be able to decorrelate our data very as it is already mostly uncorrelated.
+```
+
+
+```{r PCA}
+# Run a Principle Component Analysis
+PC <- prcomp(X, scale. = F)
+
+# Check levels of information
+plot(PC$sdev[1:16]/sum(PC$sdev), pch = 19, cex = 0.7, ylab = "Proportion of Explained Variation", xlab = "Principle Component", type = "b")
+
+# Check elbows
+sum(PC$sdev[1:4])/sum(PC$sdev)
+sum(PC$sdev[1:6])/sum(PC$sdev)
+sum(PC$sdev[1:10])/sum(PC$sdev)
+
+# Plot most important Principle components
+pairs(PC$x[,1:6], pch = 16, cex = 0.75, col = colors)
+
+# Biplot for PCA
+autoplot(PC, data=FinData, colour=colors,  loadings=TRUE, loadings.label = TRUE, loadings.label.size = 2, loadings.colour = 'grey', loadings.label.colour="black", loadings.label.angle = 90) +
+  theme_light()
+
+# Loadings
+melted_cormat <- melt(PC$rotation)
+colnames(melted_cormat) <- c("Var", "PC", "Correlation")
+melted_cormat$Correlation <- ifelse(abs(melted_cormat$Correlation) < 0.3, 0, melted_cormat$Correlation)
+ggplot(data = melted_cormat, aes(x=Var, y=PC, fill=Correlation)) + 
+  geom_tile() +
+  scale_fill_viridis(discrete=FALSE)+ 
+  theme(axis.text.x = element_text(angle = 90))+
+  xlab("")+ ylab("")
+```
+
+```{r Robust PCA}
+# Perform Robust PCA
+robPCA <- PcaHubert(X)
+
+# Rename Columns of Scores
+colnames(robPCA@scores) <- paste0("RPC", 1:6)
+
+# Get variable importance
+varimp <- summary(robPCA)@importance[2,]
+
+# Plot Scree Plot
+plot(varimp, pch = 19, cex = 0.7, ylab = "Proportion of Explained Variation", xlab = "Robust Principle Component", type = "b")
+
+# Plot Scores
+pairs(robPCA@scores, col = colors, pch = 16, cex = 0.75)
+
+# Proper visible biplot
+ggplot(data=20*robPCA$loadings, aes(PC1, PC2))+
+  geom_vector( col = "grey") +
+  geom_point(data=robPCA$scores, aes(x=RPC1, y=RPC2), col=colors) +
+  geom_text(label = rownames(robPCA$loadings), size = 2.5)+
+  xlab(paste("PC1 (", round(varimp[1]*100,1), "%)"))+
+  ylab(paste("PC2 (", round(varimp[2]*100,1), "%)"))
+
+# Outlier Map
+plot(robPCA)
+# Obtain outliers
+FinData[which(robPCA$flag == F),]
+  # Score distance > 4
+#robPCA$sd
+  # Orthogonal distance > 4
+#robPCA$od
+
+# Get tables of good and bad outliers to compare with original data
+FinData[which(robPCA$sd > robPCA$cutoff.sd & robPCA$od > robPCA$cutoff.od), c("Name", "age", "Position", "Market Value", "OVR")]
+FinData[which((robPCA$sd < robPCA$cutoff.sd & robPCA$od > robPCA$cutoff.od)| (robPCA$sd > robPCA$cutoff.sd & robPCA$od < robPCA$cutoff.od)),c("Name", "age", "Position","Market Value", "OVR")]
+FinData[which(robPCA$sd > robPCA$cutoff.sd & robPCA$od < robPCA$cutoff.od),c("Name", "age", "Position","Market Value", "OVR")]
+FinData[which(robPCA$sd < robPCA$cutoff.sd & robPCA$od < robPCA$cutoff.od),]
+```
+
+```{r 3D_PCA}
+# Plot the PCA in 3 dimensions
+pl <- scatterplot3d(PC$x[,1], PC$x[,2], PC$x[,3], color = colors, angle = 275, xlab = "PC1", ylab = "PC2", zlab = "PC3")
+zz.coords <- pl$xyz.convert(PC$x[,1], PC$x[,2], PC$x[,3]) 
+text(zz.coords$x, 
+     zz.coords$y,             
+     labels = FinData$Name,               
+     cex = .5, col =colors,
+     pos = 4) 
+
+# Plot the RPCA in 3 dimensions
+pl <- scatterplot3d(robPCA$scores[,1], robPCA$scores[,2], robPCA$scores[,3], color = colors, angle = 275, xlab = "RPC1", ylab = "RPC2", zlab = "RPC3")
+zz.coords <- pl$xyz.convert(robPCA$scores[,1], robPCA$scores[,2], robPCA$scores[,3]) 
+text(zz.coords$x, 
+     zz.coords$y,             
+     labels = FinData$Name,               
+     cex = .5, col =colors,
+     pos = 4) 
+```
+
+
+```{r KPCA-Radial}
+# We've tested polydot, vanilladot, splinedot, these all do not give a very nice display of the data for KPCA, but both rbfdot and laplacedot give the same type. And it diffferentiates quite well.
+
+# KPCA with radial basis
+KPC2 <- kpca(~., data = data.frame(X), kernal = "rbfdot", kpar=list(sigma=0.01))
+
+# Which components explain the most variation
+
+
+# Plot of KPCA
+plot(rotated(KPC2),col=FinData$Position,
+xlab="1st Principal Component",ylab="2nd Principal Component", cex = 0)
+text(rotated(KPC2), labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+```
+
+```{r KPCA-Laplace}
+# # KPCA with laplace
+KPC4 <- kpca(~., data = data.frame(X), kernal = "laplacedot", kpar=list(sigma=0.01))
+
+# Which components explain the most variation
+
+# Plot of KPCA
+plot(rotated(KPC4),col=FinData$Position,
+xlab="1st Principal Component",ylab="2nd Principal Component", cex = 0)
+text(rotated(KPC4), labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+```
+
+
+```{r Rtsne}
+# Run various t-sne's
+tsne10 <- Rtsne(X, 
+               dims = 2, 
+               perplexity = 10, 
+               verbose = TRUE, 
+               max_iter = 1000)
+tsne40 <- Rtsne(X, 
+                dims = 2, 
+                perplexity = 40, 
+                verbose = TRUE, 
+                max_iter = 1000)
+
+tsne70 <- Rtsne(X, 
+                dims = 2, 
+                perplexity = 70, 
+                verbose = TRUE,
+                max_iter = 1000)
+
+tsne100 <- Rtsne(X,
+                 dims = 2, 
+                 perplexity = 100, 
+                 verbose = TRUE,
+                 max_iter = 1000)
+
+# Plot t-SNE's
+plot(tsne10$Y,
+     col = colors[FinData$Position], 
+     t = "n", 
+     xlab = "t-SNE Dimension 1",
+     ylab = "t-SNE Dimension 2")
+text(tsne10$Y, labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+
+plot(tsne40$Y,
+     col = colors[FinData$Position], 
+     t = "n", 
+     xlab = "t-SNE Dimension 1",
+     ylab = "t-SNE Dimension 2")
+text(tsne40$Y, labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+
+plot(tsne70$Y, 
+     col = colors[FinData$Position], 
+     t = "n", 
+     xlab = "t-SNE Dimension 1",
+     ylab = "t-SNE Dimension 2")
+text(tsne70$Y, labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+
+plot(tsne100$Y,
+     col = colors[FinData$Position], 
+     t = "n", 
+     xlab = "t-SNE Dimension 1",
+     ylab = "t-SNE Dimension 2")
+text(tsne100$Y, labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+```
+
+
+
+# Cluster Analysis
+```{r Hierarchical Agglomerative}
+# Hieararchical Clustering (Agglomerative)
+cols <- c("darkgrey", "#679920", "#502491")
+# Obtain the number of clusters
+fviz_nbclust(robPCA$scores, hcut, method = "silhouette") + 
+  theme_classic() 
+fviz_nbclust(robPCA$scores, hcut, method = "wss")+ theme_classic() +
+  geom_vline(xintercept = 3, linetype = 2)
+fviz_nbclust(robPCA$scores, hcut, method = "gap_stat") +
+  theme_classic()
+
+# Obtain hierachical clustering
+clusters <- hclust(dist(robPCA$scores),method ="complete" )
+plot(clusters)
+
+# Cut hierarchical tree
+clusterCut <- cutree(clusters, 3)
+
+# Plot Clusters
+pairs(robPCA$scores[,1:4], col = cols[clusterCut],pch = 16, cex = 0.7)
+```
+
+
+```{r Kmeans}
+cols <- c( "#502491","#679920", "darkgrey")
+# Obtain the number of clusters
+fviz_nbclust(robPCA$scores, kmeans, method = "silhouette") +
+  theme_classic() 
+fviz_nbclust(robPCA$scores, kmeans, method = "wss")+ theme_classic() +
+  geom_vline(xintercept = 3, linetype = 2)
+fviz_nbclust(robPCA$scores, kmeans, method = "gap_stat") +
+  theme_classic()
+
+# Obtain kmeans clustering
+kmeans1 <- kmeans(robPCA$scores, 3)
+
+# Plot clusters
+pairs(robPCA$scores[,1:4],col=cols[kmeans1$cluster], pch=16, cex=0.7) 
+#points(kmeans1$centers,col=1:4,pch=8)
+
+# Cluster 1 is purple
+# Cluster 2 is green
+# Cluster 3 is grey
+```
+
+
+```{r Plaid Biclustering, include=FALSE}
+# Obtain bi-clustering
+# Doesn't have to be plaid check other methods
+  # Other methods don't work and neither does Plaid
+  # BCCC, BCXmotifs, BCSpectral, BCBImax, BCQuest
+
+# Perform plaid biclustering
+bi <- biclust(X, method = BCPlaid(), cluster="b",fit.model=y~m+a+b)
+
+
+# See how many biclusters there are
+summary(bi)
+
+# 3 clusters
+parallelCoordinates(X, bi,number = 1)
+parallelCoordinates(X, bi,number = 2)
+parallelCoordinates(X, bi,number = 3)
+
+# See how plaid clusters by unimportant variables that would have been removed if sparsePCA was explored
+drawHeatmap(X, bi, number = 1)
+drawHeatmap(X, bi, number = 2)
+drawHeatmap(X, bi, number = 3)
+```
+
+```{r ISA}
+# Choose between these 2 seeds # 3000 does work slightly better
+set.seed(3000)
+
+# Biclustering using ISA
+isa.result <- isa(X)
+
+# Turn result into a workable bicluster
+biii <- isa.biclust(isa.result)
+
+#plotclust(X, biii)
+
+#parallelCoordinates(X, biii,number = 1)
+#parallelCoordinates(X, biii,number = 2)
+#parallelCoordinates(X, biii,number = 3)
+
+############### Defensive Biclustering
+  # 14 better than 3
+#drawHeatmap(X,biii, 3)
+  # Both 11 and 14 are informative but maybe just use 14
+#drawHeatmap(X,biii, 11)
+drawHeatmap(X,biii, 14)
+  # 14 better than 17
+#drawHeatmap(X,biii, 17)
+  # Same as 17 but less info
+#drawHeatmap(X,biii, 19)
+
+############### Attacking Biclustering
+drawHeatmap(X,biii, 5)
+  # 16 is better than 12
+#drawHeatmap(X,biii, 12)
+  # 16 better than 12
+#drawHeatmap(X,biii, 13)
+drawHeatmap(X,biii, 16)
+# Definitely include all above
+
+############### Misc Biclustering
+  # Not sure what yellow cards and red cards tell us. Maybe more aggressive players
+drawHeatmap(X,biii, 2)
+
+############### CDM Biclustering
+  # 15 gives more information
+drawHeatmap(X,biii, 4)
+#drawHeatmap(X,biii, 15)
+#drawHeatmap(X,biii, 18)
+
+############### CAM Biclustering 
+  # 10 holds more information than 1
+#drawHeatmap(X,biii, 1) 
+#drawHeatmap(X,biii, 6)
+drawHeatmap(X,biii, 10)
+
+#kmeans1$cluster
+#which(clusterCut==3)
+# From the 19th bicluster onwards, biclusters were more broad and were difficult to interpret due to the number of players involved. So although there are 44 biclusters available it would not be worthwhile to look any further
+```
+
+```{r MultiFA, include=FALSE}
+# library(FactoMineR)
+# 
+# resMFA <- MFA(SPCA_scores,
+# group = c(3,3,3),#c(2, 2, 2, 2,2,2,2 ,2 ,2 ,2 ,2 ,2 ,2 ),
+# #type = c("c", "c"),
+# #ncp = 2,
+# name.group = c("Group 1", "Group 2", "Group 3"),
+# graph=T 
+# )
+
+# plot(resMFA)
+# 
+# plot(resMFA, choix = "ind", partial="all", cex = 0.7)
+# plot(resMFA, choix = "ind", habillage="Label")
+# plot(resMFA, choix = "axes")
+# liste = plotMFApartial(resMFA, cex = 0.3)
+# plot(resMFA,choix="ind",habillage = "Terroir")
+```
+
+```{r Fable, include=FALSE}
+#BiocManager::install("fable")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("fabia")
+# install.packages("fabia")
+# require(fabia)
+# # p relating to 3 positions
+# fab <- fabia(t(X),cyc = 1000, center = 0, norm = 0)
+# summary(fab)
+# 
+# # Tried Fabia and it did not work out
+# bicF <- extractBicList(data = X, biclustRes = fab, p=5, bcMethod="fabia")
+# show(bicF)
+# 
+# # ppBC(bicF,eMat=t(X), bcNum=1)
+# # ppBC(bicF,eMat=t(X), bcNum=2)
+# # ppBC(bicF,eMat=t(X), bcNum=3)
+# 
+# # heatmapBC2(X,bicF,bcNum=2, N=10)
+# 
+# plotFabia(fab, bicF, bcNum=1, plot = 1)
+# plotFabia(fab, bicF, bcNum=1, plot = 2)
+# 
+# plotFabia(fab, bicF, bcNum=2, plot = 1)
+# plotFabia(fab, bicF, bcNum=2, plot = 2)
+# 
+# plotFabia(fab, bicF, bcNum=3, plot = 1)
+# plotFabia(fab, bicF, bcNum=3, plot = 2)
+```
+
+
+```{r MVGLM}
+# Obtain original data
+Data<-FinData
+# Change position to numeric
+Data$Position<- as.numeric(Data$Position)
+# Change league to numeric
+Data$League<- as.numeric(as.factor(Data$League))
+# Obtain unique names of variables
+names(Data) <- make.names(names(Data), unique=TRUE)
+
+# Data that will be used for modelling
+all<-Data[,c(3,35,1,2,6,8:11,15:24,27:29,33)]
+# Specify link function for both response variables
+fam<- c("gaussian", "gaussian") #defining the distributions of dependent variables
+
+# Names
+n0<-names(all)
+# Response names
+ny_all<- n0[1:2]
+# Covariate names
+nx_all<- n0[4:length(n0)]
+
+# Specify model formuula
+form_all<-  multivariateFormula(ny_all,nx_all)
+# Use a subset for CV
+sub <- sample(1:nrow(all),35,replace=FALSE)
+# Obtain subset (Training set)
+sub_fit <- (1:nrow(all))[-sub]
+
+# Specify covariate design matrix of data data
+X<- model.matrix(form_all, data=all)[,-1]
+# Specify covariate design matrix for test data
+xnew <- model.matrix(form_all, data=Data[sub,])
+# Specify repsonse matrix of data
+Y<-all[,ny_all]
+
+# Perform MVGLM on training set
+player_glm<- multivariateGlm.fit(Y[sub_fit,,drop=FALSE],
+                                 X[sub_fit,,drop=FALSE],
+                                 family=fam,size=NULL)
+
+# Obtain coefficients
+coefs <- as.matrix(sapply(player_glm,coef))
+
+# Predict for test set
+pred.glm <- multivariatePredictGlm(xnew,family=fam,beta=coefs)
+
+# Obtain RMSE and comparison of results
+sqrt(mean((Y[sub,1]-pred.glm[,1])^2))
+sqrt(mean((Y[sub,2]-pred.glm[,2])^2))
+MKV<-cbind(Y[sub,1],pred.glm[,1])
+OVR<-cbind(Y[sub,2],pred.glm[,2])
+```

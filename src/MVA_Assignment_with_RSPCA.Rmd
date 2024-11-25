@@ -1,0 +1,536 @@
+---
+title: "MVA Assignment"
+author: "Edward Baleni, BLNEDW003, Thabo Dube, DBXTHA030"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    fig_caption: yes
+    extra_dependencies:
+    - float
+    - subfig
+    keep_md: yes
+  html_document:
+    df_print: paged
+header-includes: \usepackage{amsmath}
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align="center", out.width = "65%", fig.pos = "H")
+```
+
+# Introduction
+
+```{r Packages, include=FALSE}
+set.seed(16)
+require(Rtsne)
+require(scatterplot3d)
+require(sparsepca)
+require(kernlab)
+require(plotly)
+require(biclust)
+require(cluster)
+require(corrplot)
+require(GGally)
+require(rrcov)
+require(ordr)
+```
+
+
+```{r Data}
+load("FinData.RData")
+rownames(FinData) <- FinData$Name
+X <- FinData
+rownames(X) <- X$Name
+X <- scale(X[,c(-1,-5, -6, -7, -8,-3,-4, -35, -34, -36, -37)])
+
+par(mar = c(8, 4, 0.5, 2))
+boxplot(X, las = 2)
+
+colors <- c("#900000", "#E79300", "#59A6F7") # DF, FW, MF
+colors <- colors[FinData$Position]
+
+data.frame(FinData$Position, colors)
+```
+
+# Exploratory Data Analysis
+
+
+
+# Methodology
+```{r Correlations}
+# Quickly check correlations as this may inform our thinking on principle components
+co <- cor(X)
+corrplot((co),method = 'square', order = 'FPC', type = 'lower', diag = FALSE)
+# Now we see how much of the data is correlated and how much of it is not
+co[upper.tri(co)] <- NA 
+co <- co - diag(nrow(co))
+(pres <- sum(abs(co) > 0.5, na.rm = T))#/(ncol(combn(26, 2))))
+ncol(combn(26, 2))
+
+# The code above shows us that out of the 325 correlations not including correlation with itself that only 54 correlations are present in our dataset. This may indicate the possibility that the PCA may not be able to decorrelate our data very as it is already mostly uncorrelated.
+```
+
+
+```{r PCA}
+# Run a Principle Component Analysis
+PC <- prcomp(X, scale. = F)
+
+# Check levels of information
+plot(PC$sdev/sum(PC$sdev), pch = 19, cex = 0.7, ylab = "Explained Variation (%)", xlab = "Principle Component")
+
+sum(PC$sdev[1:4])/sum(PC$sdev)
+sum(PC$sdev[1:6])/sum(PC$sdev)
+sum(PC$sdev[1:10])/sum(PC$sdev)
+
+# Plot most important Principle components
+pairs(PC$x[,1:6], col = colors, pch = 16, cex = 0.75)
+
+# Loadings
+library(reshape2)
+melted_cormat <- melt(PC$rotation)
+colnames(melted_cormat) <- c("Var", "PC", "Correlation")
+melted_cormat$Correlation <- ifelse(abs(melted_cormat$Correlation) < 0.3, 0, melted_cormat$Correlation)
+library(ggplot2)
+library(viridis)
+ggplot(data = melted_cormat, aes(x=Var, y=PC, fill=Correlation)) + 
+  geom_tile() +
+  scale_fill_viridis(discrete=FALSE)+ 
+  theme(axis.text.x = element_text(angle = 90))+
+  xlab("")+ ylab("")
+
+# Perform a biplot
+biplot(PC)
+```
+
+```{r Robust PCA}
+require(rrcov)
+# With rrcov
+robPCA <- PcaHubert(X)
+
+colnames(robPCA@scores) <- paste0("RPCA", 1:6)
+varimp <- summary(robPCA)@importance[2,]
+
+plot(varimp, pch = 19, cex = 0.7, ylab = "Explained Variation (%)", xlab = "Robust Principle Component")
+pairs(robPCA@scores, col = colors, pch = 16, cex = 0.75)
+biplot(robPCA$scores, robPCA$loadings)
+plot(robPCA)
+
+# # Another way to do it    # Gives better reduction, to 5 PCs
+# require(rospca)
+# # With rospca, suggested
+# robPCA <- robpca(X, mcd = T)
+# 
+# varimp <- (sqrt(robPCA$eigenvalues))/sum(sqrt(robPCA$eigenvalues))
+# #sum(sqrt(robPCA$eigenvalues[1:3]))/sum(sqrt(robPCA$eigenvalues))
+# 
+# plot(varimp, pch = 19, cex = 0.7, ylab = "Explained Variation (%)", xlab = "Robust Principle Component")
+# pairs(robPCA$scores, col = colors, pch = 16, cex = 0.75)
+# biplot(robPCA$scores, robPCA$loadings)
+# diagPlot(robPCA)
+```
+
+```{r 3D_PCA}
+pl <- scatterplot3d(PC$x[,1], PC$x[,2], PC$x[,3], color = colors, angle = 275, xlab = "PC1", ylab = "PC2", zlab = "PC3")
+zz.coords <- pl$xyz.convert(PC$x[,1], PC$x[,2], PC$x[,3]) 
+text(zz.coords$x, 
+     zz.coords$y,             
+     labels = FinData$Name,               
+     cex = .5, col =colors,
+     pos = 4) 
+
+pl <- scatterplot3d(robPCA$scores[,1], robPCA$scores[,2], robPCA$scores[,3], color = colors, angle = 275, xlab = "RPC1", ylab = "RPC2", zlab = "RPC3")
+zz.coords <- pl$xyz.convert(robPCA$scores[,1], robPCA$scores[,2], robPCA$scores[,3]) 
+text(zz.coords$x, 
+     zz.coords$y,             
+     labels = FinData$Name,               
+     cex = .5, col =colors,
+     pos = 4) 
+```
+
+```{r RSPCA-Tuning, message=FALSE, results='hide'}
+# Because the biplot of the original PCA is so messy, it is advised to run a Sparse PCA to interpret biplot
+CV <- function(a, b, X) {
+  SPCA <- robspca(X, k=6, alpha = a, beta = b, verbose = 1)
+  obj <- min(SPCA$objective)
+  return(list(SPCA=SPCA, objective = obj))
+}
+
+#test <- seq(1e-06, 1.5, length = 20)
+test <- c(1e-07, 1e-06, 1e-05, 1e-04, 1e-03, 1e-02, 1e-01, 1, 1.1, 2)
+hold <- list()
+saved <- list()
+PEV_list <- list()
+finObj_list <- list()
+count = 1
+
+# But can we really run the SPCA 900 times to find best lambdas?
+for (i in 1:10) {
+  for (j in 1:10) {
+    hold[[count]] <- CV(test[i], test[j], X)
+    PEV_list[[count]] <- summary(hold[[count]][["SPCA"]])[3,] 
+    finObj_list[[count]] <- hold[[count]][["objective"]]
+    saved[[count]] <- c(test[i], test[j])
+    count = count+1
+  }
+}
+
+PEV <- t(data.frame(PEV_list))
+rownames(PEV) <- 1:100
+#colnames(eigen) <- paste0("PC", 1:9)
+
+finObj <- unlist(finObj_list)
+
+lambda <- t(data.frame(saved))
+rownames(lambda) <- 1:100
+colnames(lambda) <- c("alpha-lasso-sparser", "beta-ridge-shrinkage")
+round(lambda[44,], 5)
+
+# Essentially an optimisation is utilised to perform this sparse SPCA, and the objective function has been found for each case of hyperparameter in the equation. We see that after index 50, we do not have to look much further as the objective function becomes too big to 
+plot(finObj, type = "l")
+abline( v = c(1, 5, 11,15,21,25,31,35), col = 'pink', lty = 3)
+abline(v = c(41 ,45), col = 'red', lty = 3)
+# the red is the range that we should pick in to get a decent sparse and robust PCA. It is the sparser that is the largest but still small enough that we are able to retain a decent amount of information. I think we should select 44, so this would mean the beta shrinkage 0.0001, not 0.001 (45).
+
+# https://arxiv.org/pdf/1804.00341.pdf
+```
+
+
+```{r RSPCA-Tuning2, message=FALSE, results='hide'}
+# Because the biplot of the original PCA is so messy, it is advised to run a Sparse PCA to interpret biplot
+CV <- function(a, b, X) {
+  SPCA <- robspca(X, k=6, alpha = a, beta = b, verbose = 1)
+  return(SPCA)
+}
+
+#test <- seq(1e-06, 1.5, length = 20)
+test <- c(1e-07, 1e-06, 1e-05, 1e-04, 1e-03, 1e-02, 1e-01, 1, 1.1, 2)
+hold <- list()
+saved <- list()
+PEV_list <- list()
+count = 1
+
+# But can we really run the SPCA 900 times to find best lambdas?
+for (i in 1:10) {
+  hold[[count]] <- CV(test[i], 0.0001, X)
+  PEV_list[[count]] <- summary(hold[[count]])[3,] 
+  saved[[count]] <- c(test[i], 0)
+  count = count+1
+}
+
+PEV <- t(data.frame(PEV_list))
+rownames(PEV) <- 1:10
+
+lambda <- t(data.frame(saved))
+rownames(lambda) <- 1:10
+colnames(lambda) <- c("alpha-lasso-sparser", "beta-ridge-shrinkage")
+lambda <- as.numeric(lambda[,1])
+
+rownames(PEV) <- lambda
+
+# What we have is alpha for different betas. If we kept the alpha the same the next 10 rows are for differing betas. Say we don't care about the betas.
+# we want to plot the alphas on the x axis and the PC/sum(PCs) on the y-axis.
+
+# Realistically, we would have to pick the best beta and then after we may plot the 9 diagrams of the explained variance for each PC for the different values of alpha. 
+
+# Even more so it may be better to find for beta, when alpha = 0 and then to find for alpha when beta = optimal
+
+# Just like for elastic net implementation, because n>>p, the ridge penalty has been set to 0 and we will only be looking at lasso penalty
+
+# Plot without considering x-axis
+matplot(PEV, type = "p", pch = 1, col = rainbow(9))
+matlines(PEV, col = rainbow(9), lty = 2)
+abline(v = 5, col = "darkgreen", lty = 3, lwd = 2)
+
+# Plot in consideration of the x-axis
+matplot(lambda,PEV, type = "p", pch = 1, xlab = expression(alpha), col = rainbow(9))
+matlines(lambda,PEV, col = rainbow(9), lty = 2)
+abline(v = lambda[5], col = "darkgreen", lty = 3, lwd = 2)
+# I would suggest we make our SPCA based on this 6th lambda or maybe at the 5th to play it safe, because after the 6th we lose way too much information
+
+# This method agrees with the previous method that when the ridge regression penalty is 0.0001, that the lasso must be 0.001. And that this will give us a good SPCA.
+SPCA <- hold[6][[1]]
+#
+#SPCA2 <- rospca(X, k=5, stand = F,grid = T, lambda = 0.1)
+summary(SPCA)
+print(SPCA)
+```
+
+
+```{r RSPCA-Results}
+SPCA_load <- as.data.frame(SPCA$loadings)
+rownames(SPCA_load) <- colnames(X)
+colnames(SPCA_load) <- paste0("RSPC", 1:6)
+SPCA_scores <- data.frame(SPCA$scores)
+colnames(SPCA_scores) <- paste0("RSPC", 1:6)
+
+pairs(SPCA_scores[, 1:6],col = colors, pch = 16, cex = 0.75)
+
+# We see that there are a number of Variabels that have been removed
+which(rowSums(SPCA_load[,1:2]) ==0 )
+SPCA_load_no_0 <- SPCA_load[which(rowSums(SPCA_load[,1:2]) !=0 ),]
+biplot(SPCA_scores[,1:2], SPCA_load_no_0[,1:2], xlab = "RSPC1", ylab = "RSPC2")
+
+
+# Plotting a 3D Biplot Below
+# https://stackoverflow.com/questions/44393823/3d-biplot-in-plotly-r
+# Almost 70% of all variance is explained in first 3 SPCs
+sum(PEV[5,1:3])
+
+# 
+# # https://plotly.com/r/pca-visualization/
+# p <- plot_ly() %>%
+#   add_trace(data=SPCA_scores, x = ~RSPC1, y = ~RSPC2, z = ~RSPC3, 
+#              color = ~FinData$Position, colors = c("#900000", "#E79300", "#59A6F7"), type = 'scatter3d', mode = 'markers', size = 12, marker = list(opacity = 0.5) )
+# 
+# # Scale factor for loadings
+# scale.loads <- 20
+# for (k in 1:nrow(SPCA_load_no_0)) {
+#    x <- c(0, SPCA_load_no_0[k,1])*scale.loads
+#    y <- c(0, SPCA_load_no_0[k,2])*scale.loads
+#    z <- c(0, SPCA_load_no_0[k,3])*scale.loads
+#    p <- p %>% add_trace(x=x, y=y, z=z,
+#             type="scatter3d", mode="lines", name = rownames(SPCA_load_no_0)[k], line = list(width=8),  colors = rainbow(20))
+# }
+# 
+# p
+
+ggplot(data=20*SPCA_load_no_0, aes(RSPC1, RSPC2))+
+  geom_vector( col = "grey") +
+  geom_point(data=SPCA_scores, aes(x=RSPC1, y=RSPC2), col=colors) +
+  geom_text(label = rownames(SPCA_load_no_0), size = 2.5, angle = 45)+
+  xlab(paste("PC1 (", round(varimp[1]*100,1), "%)"))+
+  ylab(paste("PC2 (", round(varimp[2]*100,1), "%)"))
+```
+
+We've tested polydot, vanilladot, splinedot, these all do not give a very nice display of the data for KPCA, but both rbfdot and laplacedot give the same type. And it diffferentiates quite well.
+
+```{r KPCA-Radial}
+KPC2 <- kpca(~., data = data.frame(X), kernal = "rbfdot", kpar=list(sigma=0.01))
+
+# Which components explain the most variation
+
+
+# Plot of KPCA
+plot(rotated(KPC2),col=FinData$Position,
+xlab="1st Principal Component",ylab="2nd Principal Component", cex = 0)
+text(rotated(KPC2), labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+```
+
+```{r KPCA-Laplace}
+# Perform KPCA
+KPC4 <- kpca(~., data = data.frame(X), kernal = "laplacedot", kpar=list(sigma=0.01))
+
+# Which components explain the most variation
+
+# Plot of KPCA
+plot(rotated(KPC4),col=FinData$Position,
+xlab="1st Principal Component",ylab="2nd Principal Component", cex = 0)
+text(rotated(KPC4), labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+```
+
+
+```{r Rtsne}
+# Run various t-sne's
+tsne10 <- Rtsne(X, 
+               dims = 2, 
+               perplexity = 10, 
+               verbose = TRUE, 
+               max_iter = 1000)
+tsne40 <- Rtsne(X, 
+                dims = 2, 
+                perplexity = 40, 
+                verbose = TRUE, 
+                max_iter = 1000)
+
+tsne70 <- Rtsne(X, 
+                dims = 2, 
+                perplexity = 70, 
+                verbose = TRUE,
+                max_iter = 1000)
+
+tsne100 <- Rtsne(X,
+                 dims = 2, 
+                 perplexity = 100, 
+                 verbose = TRUE,
+                 max_iter = 1000)
+
+# Plot t-SNE's
+plot(tsne10$Y,
+     col = colors[FinData$Position], 
+     t = "n", 
+     xlab = "t-SNE Dimension 1",
+     ylab = "t-SNE Dimension 2")
+text(tsne10$Y, labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+
+plot(tsne40$Y,
+     col = colors[FinData$Position], 
+     t = "n", 
+     xlab = "t-SNE Dimension 1",
+     ylab = "t-SNE Dimension 2")
+text(tsne40$Y, labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+
+plot(tsne70$Y, 
+     col = colors[FinData$Position], 
+     t = "n", 
+     xlab = "t-SNE Dimension 1",
+     ylab = "t-SNE Dimension 2")
+text(tsne70$Y, labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+
+plot(tsne100$Y,
+     col = colors[FinData$Position], 
+     t = "n", 
+     xlab = "t-SNE Dimension 1",
+     ylab = "t-SNE Dimension 2")
+text(tsne100$Y, labels = FinData$Name, col = colors[FinData$Position], cex = 0.5)
+```
+
+
+
+# Cluster Analysis
+
+```{r Fuzzy}
+# https://arxiv.org/ftp/arxiv/papers/1406/1406.4007.pdf
+# https://www.r-bloggers.com/2012/12/fuzzy-clustering-with-fanny/ 
+
+# In terms of position 1
+fan <- fanny(X, k=3, memb.exp = 1.05, maxit = 5000)
+plot(fan)
+tt <- table(FinData$Position, fan$clustering)
+sum(sum(tt)-sum(diag(tt)))/sum(tt)
+
+fan <- fanny(robPCA$scores, k=3, memb.exp = 1.05, maxit = 5000)
+plot(fan)
+t <- table(FinData$Position, fan$clustering)
+sum(sum(t)-sum(diag(t)))/sum(t)
+
+# In terms of position 2
+fan <- fanny(X, k=9, memb.exp = 1.05, maxit = 5000)
+plot(fan)
+table(FinData$Position2.y, fan$clustering)
+
+# In terms of OVR percentile
+fan <- fanny(X, k=4, memb.exp = 1.05, maxit = 5000)
+plot(fan)
+table(FinData$Percentile, fan$clustering)
+```
+
+```{r}
+# https://search.r-project.org/CRAN/refmans/mclust/html/hcE.html
+library(mixture)
+clus <- gpcm(as.matrix(robPCA$scores), G=3)
+summary(clus)
+plot(robPCA$scores, col = clus$map+1)
+data.frame(clus$map, FinData$Position)
+
+
+require(mclust)
+hcT <- hcVVV(robPCA$scores, minclus = 3)
+cl <- hclass(hcT,3)
+
+par(pty = "s", mfrow = c(1,1))
+clPairs(robPCA$scores[,1:2],cl=cl[,"3"])
+
+tt <- table(cl, FinData$Position)
+sum(sum(tt)-sum(diag(tt)))/sum(tt)
+
+clusttt <- cluster::clara(robPCA$scores, 3, pamLike = T)
+
+plot(clusttt)
+
+tt <- table(clusttt$clustering, FinData$Position)
+sum(sum(tt)-sum(diag(tt)))/sum(tt)
+```
+
+
+```{r Biclustering}
+# Obtain bi-clustering
+# Doesn's ahve to be plaid check other methods
+  # BCCC, BCXmotifs, BCSpectral, BCBImax, BCQuest
+
+bi <- biclust(X, method = BCPlaid(), cluster="b",fit.model=y~m+a+b)
+
+
+summary(bi)
+par(mar = c(2, 2, 10, 2)) # Set the margin on all sides to 2
+# 3 clusters
+parallelCoordinates(X, bi,number = 1)
+parallelCoordinates(X, bi,number = 2)
+parallelCoordinates(X, bi,number = 3)
+
+drawHeatmap(X, bi, number = 1)
+drawHeatmap(X, bi, number = 2)
+drawHeatmap(X, bi, number = 3)
+```
+
+```{r ISA}
+# # install.packages("isa2")
+require(isa2)
+isa.result <- isa(X)
+
+biii <- isa.biclust(isa.result)
+
+drawHeatmap(X,biii, 1)
+drawHeatmap(X,biii, 2)
+drawHeatmap(X,biii, 3)
+drawHeatmap(X,biii, 4)
+drawHeatmap(X,biii, 5)
+```
+
+```{r}
+# library(FactoMineR)
+# 
+# resMFA <- MFA(SPCA_scores,
+# group = c(3,3,3),#c(2, 2, 2, 2,2,2,2 ,2 ,2 ,2 ,2 ,2 ,2 ),
+# #type = c("c", "c"),
+# #ncp = 2,
+# name.group = c("Group 1", "Group 2", "Group 3"),
+# graph=T 
+# )
+
+# plot(resMFA)
+# 
+# plot(resMFA, choix = "ind", partial="all", cex = 0.7)
+# plot(resMFA, choix = "ind", habillage="Label")
+# plot(resMFA, choix = "axes")
+# liste = plotMFApartial(resMFA, cex = 0.3)
+# plot(resMFA,choix="ind",habillage = "Terroir")
+```
+
+```{r}
+BiocManager::install("fable")
+# 
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# BiocManager::install("fabia")
+# install.packages("fabia")
+# require(fabia)
+# # p relating to 3 positions
+# fab <- fabia(t(X),cyc = 1000, center = 0, norm = 0)
+# summary(fab)
+# 
+# # Tried Fabia and it did not work out
+# bicF <- extractBicList(data = X, biclustRes = fab, p=5, bcMethod="fabia")
+# show(bicF)
+# 
+# # ppBC(bicF,eMat=t(X), bcNum=1)
+# # ppBC(bicF,eMat=t(X), bcNum=2)
+# # ppBC(bicF,eMat=t(X), bcNum=3)
+# 
+# # heatmapBC2(X,bicF,bcNum=2, N=10)
+# 
+# plotFabia(fab, bicF, bcNum=1, plot = 1)
+# plotFabia(fab, bicF, bcNum=1, plot = 2)
+# 
+# plotFabia(fab, bicF, bcNum=2, plot = 1)
+# plotFabia(fab, bicF, bcNum=2, plot = 2)
+# 
+# plotFabia(fab, bicF, bcNum=3, plot = 1)
+# plotFabia(fab, bicF, bcNum=3, plot = 2)
+```
+
+
+
+
+

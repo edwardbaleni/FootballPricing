@@ -1,0 +1,175 @@
+---
+title: "Assignment"
+author: "Edward Baleni, BLNEDW003"
+header-includes:
+   - \usepackage{amsmath}
+date: "`r Sys.Date()`"
+output: 
+  pdf_document:
+    fig_caption: true
+    extra_dependencies: ["float", "subfig"]
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align="center", out.width = "65%", fig.pos = "H")
+```
+
+# Introduction
+```{r}
+# https://fbref.com/en/comps/Big5/2021-2022/stats/players/2021-2022-Big-5-European-Leagues-Stats
+Standard_stats <- read.csv("Stand.txt")
+Misc_stats <- read.csv("Misc.txt")
+Defensive_stats <- read.csv("Def.txt")
+Passing_stats <- read.csv("Pass.txt")
+Shooting_Stats <- read.csv("Shoot.txt")
+```
+
+
+```{r}
+Player<-Standard_stats[-1,2:6]
+
+born<- Standard_stats[,8]
+born<-as.matrix(born[-1])
+a<-as.matrix(rep.int(2022,nrow(born)))
+Age<- as.data.frame(a -as.integer(born))
+
+
+Matches_played<- as.data.frame(as.integer(as.matrix((Standard_stats[-1,9]))))
+
+G_A_GA<- as.data.frame( sapply( Standard_stats[-1, c(13,14,15)], as.numeric) )
+misc<-  as.data.frame( sapply( Misc_stats[-1, c(10,11,13,14,15,22)], as.numeric) )
+def<-  as.data.frame( sapply( Defensive_stats[c(-1,-2), c(10,11,19,20,21,22,24,25)], as.numeric) )
+passing<- as.data.frame( sapply( Passing_stats[-1, c(10,11,12,28)], as.numeric) )
+shooting<- as.data.frame( sapply( Shooting_Stats[-1, c(11,12,13)], as.numeric) )
+
+
+updated<- cbind(Player,Age,Matches_played,G_A_GA,shooting,misc,def,passing)
+colnames(updated)<- c("Name", "Origin", "Position", "Club", "League","Age","Matches  Played",
+                       "Goals", "Assists", "Goals+Assists","Total Shots", "Shots on Target",
+                      "SOT %", "Yellow Cards", "Red Cards",
+                      "Fouls Committed", "Fouls Drawn", "Offsides", "Ball Recovery", 
+                       "Tackles Made", "Tackles Won" , "Blocks","Shots Blocked","Passes Blocked",
+                       "Clearnaces","Interceptions", "Defensive Errors", "Passes Made", "Passes Attempted",
+                       "Pass Rate", "Key Passes")
+
+updated$`SOT %`[is.na(updated$`SOT %`)] <- 0
+```
+
+```{r Fix Names}
+library(XML)
+
+# Convenience function to convert html codes
+html2txt <- function(str) {
+      xpathApply(htmlParse(str, asText=TRUE),
+                 "//body//text()", 
+                 xmlValue)[[1]] 
+}
+dat <- updated
+dat$Position2 <- dat$Position
+# converted string
+for (i in 1:nrow(dat)) {
+  # Correct any non-ascii
+  #updated$Name[i] <- html2txt(updated$Name[i])
+  #updated$Club[i] <- html2txt(updated$Club[i])
+  
+  # Remove First 2 letters
+  dat$Origin[i] <- sub(".*? ", "", dat$Origin[i])
+  
+  # Remove first couple in League
+  dat$League[i] <- sub(".*? ", "", dat$League[i])
+  
+  # unique(Data.Uni$Position)
+  # Change so that positions are consistent
+  dat$Position[i] <- sub("FWMF", "FW", dat$Position[i])
+  dat$Position[i] <- sub("DFMF", "DF", dat$Position[i])
+  dat$Position[i] <- sub("DFFW", "DF", dat$Position[i])
+  dat$Position[i] <- sub("MFFW", "MF", dat$Position[i])
+  dat$Position[i] <- sub("MFDF", "MF", dat$Position[i])
+  dat$Position[i] <- sub("FWDF", "FW", dat$Position[i])
+}
+
+Data.Uni <- dat
+
+
+Data.Uni <- Data.Uni[which(!(Data.Uni$Position %in% c("GK",""))),]
+```
+
+
+```{r} 
+# https://www.kaggle.com/datasets/ruslanhuretski/202223-football-summer-transfer-window?select=2022_2023_football_summer_transfers_v2.csv
+transfers <- read.csv("transfers.csv")
+
+for (i in 1:nrow(transfers)) {
+  transfers$league_from[i] <- sub("Série A", "Serie A", transfers$league_from[i])
+  transfers$league_from[i] <- sub("LaLiga", "La Liga", transfers$league_from[i])
+}
+
+
+
+transfers <- transfers[which(transfers$league_from %in% unique(Data.Uni$League)),]
+#transfers <- transfers[which(transfers$loan %in% "False"), ]
+transfers <- transfers[, !(names(transfers) %in% c("loan","league_from", "country_to", "league_to", "club_to", "club_from", "country_from"))]
+
+names(transfers) <- c("Name", "Position2", "age", "Market Value", "Transfer Fee (Millions)")
+
+newdat <- merge(transfers, Data.Uni, by = "Name")
+newdat <- newdat[,!(names(newdat) %in% c("Age"))]
+newdat$age <- as.numeric(newdat$age)
+
+newdat$Position <- as.factor(newdat$Position)
+
+# There are 28 duplicates
+sum(duplicated(newdat$Name))
+
+
+
+sum(newdat$`Transfer Fee (Millions)` == 0)
+
+save(newdat, file = "WithTransferData.Rdata")
+
+
+matplot(newdat[,4:5], type = "l")
+```
+
+```{r}
+#https://www.kaggle.com/datasets/sanjeetsinghnaik/fifa-23-players-dataset
+#https://www.kaggle.com/datasets/tolgakurtulus/fifa-22-confirmed-players-dataset?resource=download
+
+FIFA22 <- read.csv("FIFA22_PlayerCards.csv")
+FIFA22<- FIFA22[,c(1,6)]
+FIFA23 <- read.csv("Fifa 23 Players Data.csv")
+FIFA23<- FIFA23[,c(2,3)]
+
+names(FIFA22)[names(FIFA22) == "PlayerName"] = "Name"
+names(FIFA23)[names(FIFA23) == "Full.Name"] = "Name"
+stats<-  merge(FIFA22,FIFA23, by="Name")
+
+fulldat<-c()
+fulldat<- merge(newdat, stats, by="Name")
+
+fulldat<-distinct(fulldat)
+fulldat1<- unique(fulldat)
+sum(duplicated(fulldat$Name))
+a<-which(duplicated(fulldat$Name))
+fulldat3<- fulldat[-a,]
+FinData<-fulldat3[,-2]
+
+perc <- fivenum(FinData$OVR)
+FinData$Percentile <- ifelse(FinData$OVR <= perc[2], 4, 
+                             ifelse(FinData$OVR > perc[4], 1, 
+                                    ifelse(FinData$OVR > perc[2] & FinData$OVR <= perc[3], 3, 2)))
+
+FinData$Percentile <- as.factor(FinData$Percentile)
+FinData$Position2.y <- as.factor(FinData$Position2.y)
+save(FinData,file="FinData.Rdata")
+```
+
+
+# Exploratory Data Analysis
+
+# Methodology
+
+# Results
+
+# Discussion
